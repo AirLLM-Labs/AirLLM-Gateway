@@ -1,0 +1,21 @@
+# docker-compose.override.yml
+#
+# Use this file for machine-specific Docker Compose overrides such as:
+# - alternate host port bindings
+# - local volume mounts
+# - CPU-only or fallback container settings
+# - disabling the `models` profile for app-only development
+#
+# Docker Compose automatically merges this file with docker-compose.yml.
+# Example: `docker compose up -d`
+
+services:
+  # Example override:
+  # backend:
+  #   ports:
+  #     - "4000:4000"
+  # coder-model:
+  #   environment:
+  #     CODER_PORT: 8080
+  #   volumes:
+  #     - ${MODEL_DIR}:/models:ro

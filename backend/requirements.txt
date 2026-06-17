@@ -1,0 +1,26 @@
+# AirLLM Gateway — backend dependencies (pinned for reproducible builds)
+
+# Web framework / ASGI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Data validation / settings
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Database
+SQLAlchemy[asyncio]==2.0.36
+alembic==1.14.0
+asyncpg==0.30.0            # async driver used by the app
+psycopg2-binary==2.9.10    # sync driver used by Alembic migrations
+
+# HTTP client (llama.cpp connector)
+httpx==0.28.1
+
+# Misc
+python-multipart==0.0.20
+
+# --- dev / test ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+aiosqlite==0.20.0          # in-memory async DB for tests

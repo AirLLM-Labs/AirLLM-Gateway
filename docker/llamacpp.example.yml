@@ -1,0 +1,34 @@
+# OPTIONAL compose override that runs two llama.cpp servers in containers.
+# Phase 1 normally connects to llama.cpp servers you already run on the host;
+# this file is only for users who prefer to containerise them.
+#
+#   docker compose -f docker-compose.yml -f docker/llamacpp.example.yml up
+#
+# Mount your GGUF models into /models and adjust --model paths accordingly.
+
+services:
+  coder:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >-
+      --host 0.0.0.0 --port 8080
+      --model /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+      --ctx-size 8192
+    volumes:
+      - ${LLAMA_MODELS_DIR:-./models}:/models:ro
+    ports:
+      - "8080:8080"
+
+  vision:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >-
+      --host 0.0.0.0 --port 8081
+      --model /models/llava-v1.6-mistral-7b.Q4_K_M.gguf
+      --mmproj /models/mmproj-model-f16.gguf
+      --ctx-size 4096
+    volumes:
+      - ${LLAMA_MODELS_DIR:-./models}:/models:ro
+    ports:
+      - "8081:8081"
+
+# When using this override, register the models in the dashboard with endpoints
+# http://coder:8080 and http://vision:8081 (the compose service names).

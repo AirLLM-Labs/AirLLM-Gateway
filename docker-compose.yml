@@ -1,0 +1,189 @@
+version: "3.9"
+
+name: airllm-gateway
+
+# ============================================================================
+# AirLLM Gateway — primary startup is:  docker compose up -d
+#
+# All ports, model paths and model files are configured in .env (copy from
+# .env.example). The three model servers belong to the `models` profile, which
+# is activated by COMPOSE_PROFILES=models in .env — remove that line for an
+# app-only stack (postgres + backend + frontend). The backend auto-discovers
+# whichever model servers are healthy, so no manual registration is needed.
+#
+# Local customisation (dev bind-mounts, CPU fallback, alternate ports) goes in
+# docker-compose.override.yml, which `docker compose` merges automatically.
+# See docker-compose.override.yml.example and docs/DOCKER.md.
+# ============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airllm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airllm}
+      POSTGRES_DB: ${POSTGRES_DB:-airllm}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airllm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-airllm}:${POSTGRES_PASSWORD:-airllm}@postgres:5432/${POSTGRES_DB:-airllm}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-changeme-admin-key}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # --- Model auto-discovery -------------------------------------------
+      # The backend polls these in-network URLs and registers the healthy ones
+      # in the model registry. Each model container listens on its ${*_PORT}.
+      MODEL_DISCOVERY_ENABLED: ${MODEL_DISCOVERY_ENABLED:-true}
+      MODEL_DISCOVERY_INTERVAL: ${MODEL_DISCOVERY_INTERVAL:-30}
+      CODER_UPSTREAM: http://coder-model:${CODER_PORT:-8080}
+      VISION_UPSTREAM: http://vision-model:${VISION_PORT:-8081}
+      DEEPSEEK_UPSTREAM: http://deepseek-model:${DEEPSEEK_PORT:-8082}
+      CODER_MODEL_NAME: ${CODER_MODEL_NAME:-qwen2.5-coder}
+      VISION_MODEL_NAME: ${VISION_MODEL_NAME:-llava}
+      DEEPSEEK_MODEL_NAME: ${DEEPSEEK_MODEL_NAME:-deepseek-coder-v2-lite}
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+    # Lets the gateway also reach a llama.cpp server running on the Docker host
+    # (e.g. http://host.docker.internal:8080) on Linux as well as Mac/Windows.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Server-side only: the dashboard's BFF proxy reaches the backend over the
+      # compose network and injects the admin token. The browser never sees it.
+      BACKEND_INTERNAL_URL: http://backend:4000
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-changeme-admin-key}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ==========================================================================
+  # Model servers — profile: models  (NVIDIA CUDA llama.cpp `server`)
+  #
+  # Requires Docker Desktop + WSL2 + the NVIDIA Container Toolkit. Each server
+  # mounts ${MODEL_DIR} read-only at /models and loads one GGUF. Set the
+  # filenames in .env. The long start_period tolerates slow model loads.
+  # ==========================================================================
+  coder-model:
+    profiles: ["models"]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    restart: unless-stopped
+    command: >-
+      --host 0.0.0.0 --port ${CODER_PORT:-8080}
+      --model /models/${CODER_MODEL_FILE}
+      --alias ${CODER_MODEL_NAME:-qwen2.5-coder}
+      --ctx-size ${CODER_CTX:-8192}
+      --n-gpu-layers ${NGL:-99}
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    ports:
+      - "${CODER_PORT:-8080}:${CODER_PORT:-8080}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${CODER_PORT:-8080}/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
+  vision-model:
+    profiles: ["models"]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    restart: unless-stopped
+    command: >-
+      --host 0.0.0.0 --port ${VISION_PORT:-8081}
+      --model /models/${VISION_MODEL_FILE}
+      --mmproj /models/${VISION_MMPROJ_FILE}
+      --alias ${VISION_MODEL_NAME:-llava}
+      --ctx-size ${VISION_CTX:-4096}
+      --n-gpu-layers ${NGL:-99}
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    ports:
+      - "${VISION_PORT:-8081}:${VISION_PORT:-8081}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${VISION_PORT:-8081}/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
+  # DeepSeek-Coder-V2-Lite (goal 8). MoE 16B — give it a large context and a
+  # generous start_period; first load is the slowest of the three.
+  deepseek-model:
+    profiles: ["models"]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    restart: unless-stopped
+    command: >-
+      --host 0.0.0.0 --port ${DEEPSEEK_PORT:-8082}
+      --model /models/${DEEPSEEK_MODEL_FILE}
+      --alias ${DEEPSEEK_MODEL_NAME:-deepseek-coder-v2-lite}
+      --ctx-size ${DEEPSEEK_CTX:-16384}
+      --n-gpu-layers ${NGL:-99}
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    ports:
+      - "${DEEPSEEK_PORT:-8082}:${DEEPSEEK_PORT:-8082}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${DEEPSEEK_PORT:-8082}/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
+volumes:
+  pgdata:

@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  backend:
+    environment:
+      # Use a local .env-managed backend port inside the compose network.
+      BACKEND_PORT: 4000
+  frontend:
+    environment:
+      FRONTEND_PORT: 3000
+  coder-model:
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: "nvidia"
+              count: all
+              capabilities: ["gpu"]
+  vision-model:
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: "nvidia"
+              count: all
+              capabilities: ["gpu"]
+  deepseek-model:
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: "nvidia"
+              count: all
+              capabilities: ["gpu"]
